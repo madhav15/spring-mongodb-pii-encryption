@@ -11,7 +11,7 @@ public class EncryptionUtil {
     private static final String ALGORITHM = "AES";
     private static final String KEY = "1234567890123456"; // 16-char key
 
-    public String encrypt(String plainText) {
+    public static String encrypt(String plainText) {
         try {
             Cipher cipher = Cipher.getInstance(ALGORITHM);
             cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(KEY.getBytes(), ALGORITHM));
@@ -21,7 +21,7 @@ public class EncryptionUtil {
         }
     }
 
-    public String decrypt(String cipherText) {
+    public static String decrypt(String cipherText) {
         try {
             Cipher cipher = Cipher.getInstance(ALGORITHM);
             cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(KEY.getBytes(), ALGORITHM));
