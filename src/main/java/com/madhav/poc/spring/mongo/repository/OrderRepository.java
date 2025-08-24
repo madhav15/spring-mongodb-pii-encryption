@@ -33,4 +33,7 @@ public interface OrderRepository extends MongoRepository<Order, String> {
     Optional<Order> findByAgent_Lead_User_NameAndAgent_Lead_User_EmailHashAndAgent_Lead_User_MobileNumberHash(
             String name, String emailHash, String mobileHash
     );
+
+    @Query("{ 'agent.agentCode': ?0, 'agent.lead.user.name': ?1 }")
+    List<Order> findOrdersByAgentCodeAndUserName(String agentCode, String nameHash);
 }
