@@ -9,4 +9,10 @@ import java.lang.annotation.Target;
 @Target(ElementType.FIELD)
 @Retention(RetentionPolicy.RUNTIME)
 public @interface Encrypted {
+
+    /** Also emit a deterministic hash column alongside (e.g., "email_hash") */
+    boolean hash() default false;
+
+    /** Optional custom hash field name; if blank, uses "<fieldName>_hash" */
+    String hashFieldName() default "";
 }

@@ -14,11 +14,15 @@ public class User {
 
     private String name;
 
-    @Encrypted
+    @Encrypted(hash = true, hashFieldName = "mobileNumberHash")
     private String mobileNumber;
 
-    @Encrypted
+    private String mobileNumberHash;
+
+    @Encrypted(hash = true, hashFieldName = "emailHash")
     private String email;
+
+    private String emailHash;
 
     @Encrypted
     private String bankAccountNumber;

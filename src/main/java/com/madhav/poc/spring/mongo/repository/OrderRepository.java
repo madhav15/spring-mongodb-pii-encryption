@@ -14,4 +14,23 @@ public interface OrderRepository extends MongoRepository<Order, String> {
 
     @Query("{ 'agent.lead.user.email': ?0 }")
     List<Order> findByEncryptedEmail(String encryptedEmail);
+
+    @Query("{ 'agent.lead.user.mobile_hash': ?0 }")
+    Optional<Order> findByMobileHash(String mobileHash);
+
+    @Query("{ 'agent.lead.user.email_hash': ?0 }")
+    Optional<Order> findByEmailHash(String emailHash);
+
+    // Search by email (compare against emailHash)
+    Optional<Order> findByAgent_Lead_User_EmailHash(String emailHash);
+
+    // Search by mobile
+    Optional<Order> findByAgent_Lead_User_MobileNumberHash(String mobileHash);
+
+    // Search by combination
+    Optional<Order> findByAgent_Lead_User_NameAndAgent_Lead_User_EmailHash(String name, String emailHash);
+
+    Optional<Order> findByAgent_Lead_User_NameAndAgent_Lead_User_EmailHashAndAgent_Lead_User_MobileNumberHash(
+            String name, String emailHash, String mobileHash
+    );
 }

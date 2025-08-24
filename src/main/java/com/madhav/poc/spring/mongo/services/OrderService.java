@@ -29,4 +29,8 @@ public class OrderService {
         String encrypted = encryptionUtil.encrypt(email);
         return repo.findByEncryptedEmail(encrypted);
     }
+
+    public Optional<Order> findByAgentLeadUserEmailHash(String emailHash) {
+        return repo.findByAgent_Lead_User_EmailHash(emailHash);
+    }
 }
