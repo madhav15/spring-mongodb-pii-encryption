@@ -6,10 +6,16 @@ import java.lang.reflect.*;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class EncryptionReflectionUtils {
 
     private EncryptionReflectionUtils() {}
+
+    // Cache: Class -> list of encrypted fields (with hash info)
+    private static final Map<Class<?>, List<FieldMetadata>> FIELD_CACHE = new ConcurrentHashMap<>();
+
+    private record FieldMetadata(String name, boolean encrypted, boolean hash, String hashFieldName, Field field) {}
 
     /**
      * Encrypts or decrypts all @Encrypted fields in an entity.
@@ -17,14 +23,14 @@ public class EncryptionReflectionUtils {
     public static void processEntity(Object entity, EncryptionUtil encryptionUtil, boolean encrypt) {
         if (entity == null) return;
 
-        Class<?> clazz = entity.getClass();
-        for (Field field : clazz.getDeclaredFields()) {
-            field.setAccessible(true);
+        List<FieldMetadata> fields = getFieldMetadata(entity.getClass());
+        for (FieldMetadata meta : fields) {
+            Field field = meta.field();
             try {
                 Object value = field.get(entity);
                 if (value == null) continue;
 
-                if (field.isAnnotationPresent(Encrypted.class)) {
+                if (meta.encrypted) {
                     if (value instanceof String strVal) {
                         field.set(entity, encrypt ? encryptionUtil.encrypt(strVal) : encryptionUtil.decrypt(strVal));
                     } else if (value instanceof LocalDateTime dateTime) {
@@ -53,36 +59,41 @@ public class EncryptionReflectionUtils {
 
     /**
      * Collect all paths of fields marked with @Encrypted(hash=true).
+     * Uses cached field metadata for performance.
      */
     public static void collectHashablePaths(Object entity, String basePath, Map<String, String> out) {
         if (entity == null) return;
 
-        Class<?> clazz = entity.getClass();
-        for (Field field : clazz.getDeclaredFields()) {
-            field.setAccessible(true);
-            String name = field.getName();
+        List<FieldMetadata> fields = getFieldMetadata(entity.getClass());
+        for (FieldMetadata meta : fields) {
+            String name = meta.name();
             String path = basePath.isEmpty() ? name : basePath + "." + name;
 
             try {
-                Object value = field.get(entity);
+                Object value = meta.field().get(entity);
 
-                if (field.isAnnotationPresent(Encrypted.class)) {
-                    Encrypted annotation = field.getAnnotation(Encrypted.class);
-                    if (annotation.hash()) {
-                        String hashFieldName = annotation.hashFieldName().isBlank() ? (name + "_hash") : annotation.hashFieldName();
-                        out.put(path, hashFieldName);
-                    }
+                if (meta.hash) {
+                    String hashFieldName = meta.hashFieldName().isBlank()
+                            ? (name + "_hash")
+                            : meta.hashFieldName();
+                    out.put(path, hashFieldName);
                 }
 
                 if (value == null) continue;
 
-                if (!field.getType().isPrimitive() && !field.getType().getName().startsWith("java.")) {
+                if (!meta.field().getType().isPrimitive() && !meta.field().getType().getName().startsWith("java.")) {
                     collectHashablePaths(value, path, out);
                 } else if (value instanceof Iterable<?> it) {
-                    for (Object item : it) collectHashablePaths(item, path, out);
+                    int idx = 0;
+                    for (Object item : it) {
+                        collectHashablePaths(item, path + "[" + idx + "]", out);
+                        idx++;
+                    }
                 } else if (value.getClass().isArray()) {
                     int n = Array.getLength(value);
-                    for (int i = 0; i < n; i++) collectHashablePaths(Array.get(value, i), path, out);
+                    for (int i = 0; i < n; i++) {
+                        collectHashablePaths(Array.get(value, i), path + "[" + i + "]", out);
+                    }
                 } else if (value instanceof Map<?, ?> map) {
                     for (Map.Entry<?, ?> me : map.entrySet()) {
                         collectHashablePaths(me.getValue(), path + "." + me.getKey(), out);
@@ -96,6 +107,7 @@ public class EncryptionReflectionUtils {
 
     /**
      * Resolves path in BSON Document, decrypts, hashes, and adds hash field.
+     * Handles both nested documents and lists/arrays of documents.
      */
     public static void resolveAndHash(Document root,
                                       String dottedPath,
@@ -103,29 +115,88 @@ public class EncryptionReflectionUtils {
                                       EncryptionUtil encryptionUtil,
                                       java.util.function.Function<String, String> hashFn) {
         PathResolution res = resolveParentAndLeaf(root, dottedPath);
-        if (res == null || !(res.parent instanceof Document parentDoc)) return;
+        if (res == null) return;
 
-        Object encryptedVal = parentDoc.get(res.leaf);
-        if (encryptedVal instanceof String encText) {
-            try {
-                String plaintext = encryptionUtil.decrypt(encText);
-                parentDoc.put(hashFieldName, hashFn.apply(plaintext));
-            } catch (Exception ex) {
-                parentDoc.put(hashFieldName, hashFn.apply(encText));
+        if (res.parent instanceof Document parentDoc) {
+            Object encryptedVal = parentDoc.get(res.leaf);
+            if (encryptedVal instanceof String encText) {
+                try {
+                    String plaintext = encryptionUtil.decrypt(encText);
+                    parentDoc.put(hashFieldName, hashFn.apply(plaintext));
+                } catch (Exception ex) {
+                    parentDoc.put(hashFieldName, hashFn.apply(encText));
+                }
+            }
+        } else if (res.parent instanceof List<?> list) {
+            for (Object obj : list) {
+                if (obj instanceof Document element) {
+                    Object encryptedVal = element.get(res.leaf);
+                    if (encryptedVal instanceof String encText) {
+                        try {
+                            String plaintext = encryptionUtil.decrypt(encText);
+                            element.put(hashFieldName, hashFn.apply(plaintext));
+                        } catch (Exception ex) {
+                            element.put(hashFieldName, hashFn.apply(encText));
+                        }
+                    }
+                }
             }
         }
     }
 
+    /**
+     * Resolve a dotted path to the parent (Document or List) and the final leaf key.
+     * Supports array indices like "users[0].email".
+     */
     private static PathResolution resolveParentAndLeaf(Document root, String dottedPath) {
         String[] parts = dottedPath.split("\\.");
-        Document parent = root;
+        Object parent = root;
+
         for (int i = 0; i < parts.length - 1; i++) {
-            Object next = parent.get(parts[i]);
-            if (!(next instanceof Document)) return null;
-            parent = (Document) next;
+            String part = parts[i];
+
+            // Handle array indices like "users[0]"
+            if (part.contains("[") && part.endsWith("]")) {
+                String fieldName = part.substring(0, part.indexOf("["));
+                int idx = Integer.parseInt(part.substring(part.indexOf("[") + 1, part.indexOf("]")));
+                if (!(parent instanceof Document doc)) return null;
+                Object arrObj = doc.get(fieldName);
+                if (arrObj instanceof List<?> list && idx < list.size()) {
+                    parent = list.get(idx);
+                } else {
+                    return null;
+                }
+            } else {
+                if (!(parent instanceof Document doc)) return null;
+                Object next = doc.get(part);
+                parent = next;
+            }
         }
+
         return new PathResolution(parent, parts[parts.length - 1]);
     }
 
     private record PathResolution(Object parent, String leaf) {}
+
+    /**
+     * Build or retrieve cached metadata for a class.
+     */
+    private static List<FieldMetadata> getFieldMetadata(Class<?> clazz) {
+        return FIELD_CACHE.computeIfAbsent(clazz, c -> {
+            List<FieldMetadata> metas = new ArrayList<>();
+            for (Field field : c.getDeclaredFields()) {
+                field.setAccessible(true);
+                boolean encrypted = field.isAnnotationPresent(Encrypted.class);
+                boolean hash = false;
+                String hashFieldName = "";
+                if (encrypted) {
+                    Encrypted ann = field.getAnnotation(Encrypted.class);
+                    hash = ann.hash();
+                    hashFieldName = ann.hashFieldName();
+                }
+                metas.add(new FieldMetadata(field.getName(), encrypted, hash, hashFieldName, field));
+            }
+            return metas;
+        });
+    }
 }
