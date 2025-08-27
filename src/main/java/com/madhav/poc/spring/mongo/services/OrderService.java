@@ -33,4 +33,12 @@ public class OrderService {
     public Optional<Order> findByAgentLeadUserEmailHash(String emailHash) {
         return repo.findByAgent_Lead_User_EmailHash(emailHash);
     }
+
+    public void update() {
+        List<Order> all = repo.findAll();
+        Order first = all.getFirst();
+        first.getAgent().getLead().getUser().setMobileNumber("9850702373");
+
+        repo.save(first);
+    }
 }

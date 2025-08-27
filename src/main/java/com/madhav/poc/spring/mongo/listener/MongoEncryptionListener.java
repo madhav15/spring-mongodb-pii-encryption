@@ -1,98 +1,61 @@
 package com.madhav.poc.spring.mongo.listener;
 
-import com.madhav.poc.spring.mongo.util.Encrypted;
+import com.madhav.poc.spring.mongo.model.Order;
 import com.madhav.poc.spring.mongo.util.EncryptionReflectionUtils;
 import com.madhav.poc.spring.mongo.util.EncryptionUtil;
 import com.madhav.poc.spring.mongo.util.HashUtil;
+import com.madhav.poc.spring.mongo.util.Encrypted;
+import lombok.RequiredArgsConstructor;
 import org.bson.Document;
-import org.springframework.data.mongodb.core.mapping.event.*;
+import org.springframework.data.mongodb.core.mapping.event.AfterConvertCallback;
+import org.springframework.data.mongodb.core.mapping.event.BeforeConvertCallback;
+import org.springframework.data.mongodb.core.mapping.event.BeforeSaveCallback;
 import org.springframework.stereotype.Component;
 
 import java.lang.reflect.Field;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 @Component
+@RequiredArgsConstructor
 public class MongoEncryptionListener implements
-        BeforeConvertCallback<Object>,
-        AfterConvertCallback<Object>,
-        BeforeSaveCallback<Object> {
+        BeforeConvertCallback<Order>,
+        AfterConvertCallback<Order>,
+        BeforeSaveCallback<Order> {
 
     private final EncryptionUtil encryptionUtil;
 
-    // Cache whether a class has @Encrypted fields (direct or nested)
-    private static final Map<Class<?>, Boolean> ENCRYPTED_CLASS_CACHE = new ConcurrentHashMap<>();
-
-    public MongoEncryptionListener(EncryptionUtil encryptionUtil) {
-        this.encryptionUtil = encryptionUtil;
+    @Override
+    public Order onBeforeConvert(Order order, String collection) {
+        // Encrypt annotated fields in the entity graph, idempotently
+        EncryptionReflectionUtils.processEntity(order, encryptionUtil, true);
+        return order;
     }
 
     @Override
-    public Object onBeforeConvert(Object entity, String collection) {
-        if (!hasEncryptedFieldsCached(entity)) return entity;
-        EncryptionReflectionUtils.processEntity(entity, encryptionUtil, true);
-        return entity;
+    public Order onAfterConvert(Order order, Document document, String collection) {
+        // Decrypt annotated fields in the entity graph, idempotently
+        EncryptionReflectionUtils.processEntity(order, encryptionUtil, false);
+        return order;
     }
 
     @Override
-    public Object onAfterConvert(Object entity, Document document, String collection) {
-        if (!hasEncryptedFieldsCached(entity)) return entity;
-        EncryptionReflectionUtils.processEntity(entity, encryptionUtil, false);
-        return entity;
-    }
+    public Order onBeforeSave(Order order, Document document, String collection) {
+        // Build unique set of "<dottedPath> -> <hashFieldName>" from entity shape
+        Map<String, String> pathsToHashField = new LinkedHashMap<>();
+        EncryptionReflectionUtils.collectHashablePaths(order, "", pathsToHashField);
 
-    @Override
-    public Object onBeforeSave(Object entity, Document document, String collection) {
-        if (!hasEncryptedFieldsCached(entity)) return entity;
-
-        Map<String, String> hashablePaths = new HashMap<>();
-        EncryptionReflectionUtils.collectHashablePaths(entity, "", hashablePaths);
-
-        if (!hashablePaths.isEmpty()) {
-            for (Map.Entry<String, String> e : hashablePaths.entrySet()) {
-                EncryptionReflectionUtils.resolveAndHash(
-                        document,
-                        e.getKey(),
-                        e.getValue(),
-                        encryptionUtil,
-                        HashUtil::sha256Hex
-                );
-            }
+        // For each path, traverse the BSON Document and add/update sibling hash fields,
+        // handling nested Documents, Lists/arrays, and Maps.
+        for (Map.Entry<String, String> e : pathsToHashField.entrySet()) {
+            EncryptionReflectionUtils.resolveAndHash(
+                    document,
+                    e.getKey(),
+                    e.getValue(),
+                    encryptionUtil,
+                    HashUtil::sha256Hex
+            );
         }
-
-        return entity;
-    }
-
-    /**
-     * Cached check for @Encrypted fields (direct or nested).
-     */
-    private boolean hasEncryptedFieldsCached(Object entity) {
-        if (entity == null) return false;
-        return ENCRYPTED_CLASS_CACHE.computeIfAbsent(entity.getClass(), this::hasEncryptedFieldsRecursiveClass);
-    }
-
-    /**
-     * Recursive scan of a class and its nested fields to detect @Encrypted
-     */
-    private boolean hasEncryptedFieldsRecursiveClass(Class<?> clazz) {
-        try {
-            for (Field field : clazz.getDeclaredFields()) {
-                field.setAccessible(true);
-
-                // Direct annotation
-                if (field.isAnnotationPresent(Encrypted.class)) {
-                    return true;
-                }
-
-                // Nested types (skip JDK classes & primitives)
-                if (!field.getType().isPrimitive() && !field.getType().getName().startsWith("java.")) {
-                    if (hasEncryptedFieldsRecursiveClass(field.getType())) {
-                        return true;
-                    }
-                }
-            }
-        } catch (Exception ignored) {}
-        return false;
+        return order;
     }
 }

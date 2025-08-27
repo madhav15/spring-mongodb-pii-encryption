@@ -1,34 +1,28 @@
 package com.madhav.poc.spring.mongo.util;
 
-import javax.crypto.Mac;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.Base64;
 
 public class HashUtil {
-    /** SHA-256(hex) of plaintext */
-    public static String sha256Hex(String s) {
+
+    private static final String HASH_PREFIX = "HASH::";
+
+    private HashUtil() {}
+
+    public static String sha256Hex(String input) {
+        if (isHashed(input)) return input; // idempotent
         try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] dig = md.digest(s.getBytes(StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder(dig.length * 2);
-            for (byte b : dig) sb.append(String.format("%02x", b));
-            return sb.toString();
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hashBytes = digest.digest(input.getBytes(StandardCharsets.UTF_8));
+            String base64 = Base64.getEncoder().encodeToString(hashBytes);
+            return HASH_PREFIX + base64;
         } catch (Exception e) {
-            throw new RuntimeException("SHA-256 error", e);
+            throw new RuntimeException("Error generating SHA-256 hash", e);
         }
     }
 
-    /** Optional: HMAC-SHA256 if you want keyed hashing (swap usage below) */
-    public static String hmacSha256Hex(String key, String s) {
-        try {
-            Mac mac = Mac.getInstance("HmacSHA256");
-            mac.init(new javax.crypto.spec.SecretKeySpec(key.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-            byte[] dig = mac.doFinal(s.getBytes(StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder(dig.length * 2);
-            for (byte b : dig) sb.append(String.format("%02x", b));
-            return sb.toString();
-        } catch (Exception e) {
-            throw new RuntimeException("HMAC-SHA256 error", e);
-        }
+    public static boolean isHashed(String value) {
+        return value != null && value.startsWith(HASH_PREFIX);
     }
 }
